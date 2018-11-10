@@ -16,6 +16,7 @@ import os.path
 import http.client
 from os import listdir
 import logging
+import threading
 
 
 class MumbleRadioPlayer:
@@ -42,6 +43,7 @@ class MumbleRadioPlayer:
         self.exit = False
         self.nb_exit = 0
         self.thread = None
+        self.loop_worker = None
         
         FORMAT='%(asctime)s: %(message)s'
         if args.quiet:
@@ -89,13 +91,10 @@ class MumbleRadioPlayer:
                 self.play_stream(parameter)
 
             elif command == self.config.get('command', 'play_file') and parameter:
-                path = self.config.get('bot', 'music_folder') + parameter
-                if "/" in parameter:
-                    self.mumble.users[text.actor].send_message(self.config.get('strings', 'bad_file'))
-                elif os.path.isfile(path):
-                    self.launch_play_file(path)
-                else:
-                    self.mumble.users[text.actor].send_message(self.config.get('strings', 'bad_file'))
+                self.handle_play_file(parameter, False)
+
+            elif command == self.config.get('command', 'play_file_loop') and parameter:
+                self.handle_play_file(parameter, True)
 
             elif command == self.config.get('command', 'stop'):
                 self.stop()
@@ -178,8 +177,22 @@ class MumbleRadioPlayer:
             time.sleep(3)
             self.playing = True
 
-    def launch_play_file(self, path):
+    def handle_play_file(self, parameter, loop):
+        path = self.config.get('bot', 'music_folder') + parameter
+        if "/" in parameter:
+            self.mumble.users[text.actor].send_message(self.config.get('strings', 'bad_file'))
+        elif os.path.isfile(path):
+            self.launch_play_file(path, loop)
+        else:
+            self.mumble.users[text.actor].send_message(self.config.get('strings', 'bad_file'))
+
+    def launch_play_file(self, path, loop):
         self.stop()
+        self.launch_play_file_noloop(path)
+        if loop:
+            self.launch_play_file_loop(path)
+
+    def launch_play_file_noloop(self, path):
         if self.config.getboolean('debug', 'ffmpeg'):
             ffmpeg_debug = "debug"
         else:
@@ -187,6 +200,15 @@ class MumbleRadioPlayer:
         command = ["ffmpeg", '-v', ffmpeg_debug, '-nostdin', '-i', path, '-ac', '1', '-f', 's16le', '-ar', '48000', '-']
         self.thread = sp.Popen(command, stdout=sp.PIPE, bufsize=480)
         self.playing = True
+
+    def launch_play_file_loop(self, path):
+        self.loop_worker = threading.Thread(target=self.loop_worker_func, args=(path,))
+        self.loop_worker.start()
+
+    def loop_worker_func(self, path):
+        while self.playing:
+            if self.thread.poll() != None:
+                self.launch_play_file_noloop(path)
 
     def loop(self):
         while not self.exit and self.mumble.isAlive():
